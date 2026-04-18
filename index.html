@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sheet Manager</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #111; padding: 24px; }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #666; margin-bottom: 24px; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
+  button { font-size: 13px; padding: 6px 14px; border: 1px solid #ccc; background: white; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #f0f0f0; }
+  button.danger { border-color: #e44; color: #c00; }
+  button.danger:hover { background: #fff0f0; }
+  .sheet-count { font-size: 13px; color: #555; margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; border: 1px solid #e0e0e0; }
+  thead { background: #fafafa; }
+  th { text-align: left; padding: 10px 16px; font-size: 12px; font-weight: 500; color: #555; border-bottom: 1px solid #e0e0e0; }
+  td { padding: 10px 16px; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafafa; }
+  .missing-title { color: #aaa; font-style: italic; }
+  .sheet-title { font-weight: 500; }
+  .date-cell { font-family: monospace; font-size: 12px; color: #555; }
+  .actions { display: flex; gap: 8px; }
+  .actions button { padding: 3px 10px; font-size: 12px; }
+  .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 10; align-items: center; justify-content: center; }
+  .modal-bg.open { display: flex; }
+  .modal { background: white; border-radius: 10px; padding: 24px; width: 340px; }
+  .modal h2 { font-size: 16px; font-weight: 500; margin-bottom: 16px; }
+  .modal label { font-size: 13px; color: #444; display: block; margin-bottom: 4px; }
+  .modal input { width: 100%; padding: 7px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; margin-bottom: 14px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .btn-primary { background: #111; color: white; border-color: #111; }
+  .btn-primary:hover { background: #333; }
+  #toast { display: none; position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #111; color: white; padding: 8px 18px; border-radius: 6px; font-size: 13px; z-index: 20; }
+  #empty-state { text-align: center; padding: 48px; color: #aaa; font-size: 14px; display: none; }
+</style>
+</head>
+<body>
+
+<h1>Sheet Manager</h1>
+<p class="subtitle">Manage your uploaded spreadsheet files</p>
+
+<div class="toolbar">
+  <button id="btn-upload">Upload sheet</button>
+  <button id="btn-add-untitled">Add untitled</button>
+  <button id="btn-scramble">Scramble dates</button>
+  <button class="danger" id="btn-clear">Clear all</button>
+  <span class="sheet-count">Total: <span id="sheet-count">0</span> sheets</span>
+</div>
+
+<table id="sheet-table">
+  <thead>
+    <tr>
+      <th data-col="index">#</th>
+      <th data-col="title">Sheet title</th>
+      <th data-col="rows">Rows</th>
+      <th data-col="uploaded_at">Uploaded at</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody id="sheet-body">
+  </tbody>
+</table>
+<div id="empty-state">No sheets uploaded yet.</div>
+
+<div class="modal-bg" id="upload-modal">
+  <div class="modal">
+    <h2>Upload sheet</h2>
+    <label for="sheet-name">Sheet title</label>
+    <input type="text" id="sheet-name" placeholder="e.g. Q1 Sales Data" />
+    <label for="sheet-rows">Row count</label>
+    <input type="number" id="sheet-rows" placeholder="e.g. 42" min="1" max="9999" />
+    <div class="modal-actions">
+      <button id="modal-cancel">Cancel</button>
+      <button class="btn-primary" id="modal-confirm">Upload</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  let sheets = [];
+  let idCounter = 1;
+
+  function pad(n) { return String(n).padStart(2, '0'); }
+
+  function randomDate(daysAgo) {
+    const d = new Date();
+    d.setDate(d.getDate() - daysAgo);
+    d.setHours(Math.floor(Math.random() * 23), Math.floor(Math.random() * 59), Math.floor(Math.random() * 59));
+    return d;
+  }
+
+  function formatDate(d) {
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function isSortedDescending() {
+    for (let i = 0; i < sheets.length - 1; i++) {
+      if (sheets[i].uploadedAt < sheets[i+1].uploadedAt) return false;
+    }
+    return true;
+  }
+
+  function render() {
+    const tbody = document.getElementById('sheet-body');
+    const empty = document.getElementById('empty-state');
+    const table = document.getElementById('sheet-table');
+    document.getElementById('sheet-count').textContent = sheets.length;
+
+    if (sheets.length === 0) {
+      table.style.display = 'none';
+      empty.style.display = 'block';
+      return;
+    }
+    table.style.display = '';
+    empty.style.display = 'none';
+
+    tbody.innerHTML = '';
+    sheets.forEach((s, i) => {
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-id', s.id);
+      tr.setAttribute('data-index', i + 1);
+
+      const titleHtml = s.title
+        ? `<span class="sheet-title" data-testid="sheet-title">${s.title}</span>`
+        : `<span class="missing-title" data-testid="sheet-title">(no title)</span>`;
+
+      tr.innerHTML = `
+        <td data-testid="sheet-index">${i + 1}</td>
+        <td>${titleHtml}</td>
+        <td data-testid="sheet-rows">${s.rows.toLocaleString()}</td>
+        <td class="date-cell" data-testid="sheet-date">${formatDate(s.uploadedAt)}</td>
+        <td class="actions">
+          <button data-action="rename" data-id="${s.id}">Rename</button>
+          <button class="danger" data-action="delete" data-id="${s.id}">Delete</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    const sortIndicator = document.getElementById('sort-indicator');
+    if (sortIndicator) {
+      sortIndicator.textContent = isSortedDescending() ? '(sorted newest first)' : '(unsorted)';
+    }
+  }
+
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    setTimeout(() => { t.style.display = 'none'; }, 2000);
+  }
+
+  function addSheet(title, rows) {
+    sheets.unshift({
+      id: idCounter++,
+      title: title || '',
+      rows: rows || Math.floor(Math.random() * 500) + 10,
+      uploadedAt: new Date()
+    });
+    render();
+  }
+
+  document.getElementById('btn-upload').addEventListener('click', () => {
+    document.getElementById('sheet-name').value = '';
+    document.getElementById('sheet-rows').value = '';
+    document.getElementById('upload-modal').classList.add('open');
+    setTimeout(() => document.getElementById('sheet-name').focus(), 50);
+  });
+
+  document.getElementById('modal-cancel').addEventListener('click', () => {
+    document.getElementById('upload-modal').classList.remove('open');
+  });
+
+  document.getElementById('modal-confirm').addEventListener('click', () => {
+    const name = document.getElementById('sheet-name').value.trim();
+    const rows = parseInt(document.getElementById('sheet-rows').value) || Math.floor(Math.random() * 500) + 10;
+    addSheet(name, rows);
+    document.getElementById('upload-modal').classList.remove('open');
+    toast(`Sheet "${name || '(untitled)'}" uploaded`);
+  });
+
+  document.getElementById('btn-add-untitled').addEventListener('click', () => {
+    addSheet('', Math.floor(Math.random() * 500) + 10);
+    toast('Untitled sheet added');
+  });
+
+  document.getElementById('btn-scramble').addEventListener('click', () => {
+    sheets.forEach((s, i) => {
+      s.uploadedAt = randomDate(Math.floor(Math.random() * 60));
+    });
+    render();
+    toast('Dates scrambled');
+  });
+
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    sheets = [];
+    render();
+    toast('All sheets cleared');
+  });
+
+  document.getElementById('sheet-body').addEventListener('click', (e) => {
+    const action = e.target.getAttribute('data-action');
+    const id = parseInt(e.target.getAttribute('data-id'));
+    if (!action) return;
+
+    if (action === 'delete') {
+      sheets = sheets.filter(s => s.id !== id);
+      render();
+      toast('Sheet deleted');
+    }
+
+    if (action === 'rename') {
+      const sheet = sheets.find(s => s.id === id);
+      if (!sheet) return;
+      const newName = prompt('New title:', sheet.title);
+      if (newName !== null) {
+        sheet.title = newName.trim();
+        render();
+        toast('Sheet renamed');
+      }
+    }
+  });
+
+  const seedTitles = ['Q1 Sales Report', 'Customer List', 'Inventory Jan', '', 'Budget 2025', 'HR Data', ''];
+  seedTitles.forEach((title, i) => {
+    sheets.push({
+      id: idCounter++,
+      title,
+      rows: Math.floor(Math.random() * 900) + 50,
+      uploadedAt: randomDate(i * 3 + Math.floor(Math.random() * 5))
+    });
+  });
+  render();
+</script>
+</body>
+</html>
